@@ -11,8 +11,10 @@ try:
         sys.version_info.minor,
         'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
     sys.path.append("./")
+    sys.path.append("../carla/PythonAPI/carla/")
 except IndexError:
     pass
+
 
 # ==============================================================================
 # -- imports -------------------------------------------------------------------
@@ -26,6 +28,28 @@ import math
 import time
 import datetime
 from pose import PoseDefine
+
+from agents.navigation.basic_agent import BasicAgent
+
+opt_dict = {
+        "target_speed" : 50.0,
+        "sampling_radius" : 1,
+        "max_brake" : 0.3,
+        "max_throt" : 1.0,
+        "max_steer" : 0.8,
+        "lateral_control_dict" : {
+            "K_P": 0.7,
+            "K_D": 0,
+            "K_I": 0.0,
+            "dt": 0.05
+        },
+        "longitudinal_control_dict" : {
+            "K_P": 0.3,
+            "K_D": 0.0,
+            "K_I": 0.0,
+            "dt": 0.05
+        }
+    }
 
 class ScenarioXML(object):
 
@@ -271,10 +295,20 @@ class ScenarioXML(object):
                 print('cannot start AI walker. world_id: ', world_id)
                 return
 
-        def moveAiVehicle(world_id):
+        def moveAiVehicle(id, world_id, type, waypoints):
             try:
                 actor = self.world.get_actor(world_id)
-                actor.set_autopilot(True)
+                #actor.set_autopilot(True)
+                speed = float(waypoints[0].attrib.get('speed'))
+                agent = BasicAgent(actor, target_speed=speed, opt_dict=opt_dict)
+                control_actor = {}
+                control_actor['actor'] = self.world.get_actor(world_id)
+                control_actor['agent'] = agent
+                control_actor['type'] = type
+                control_actor['id'] = id
+                control_actor['waypoints'] = waypoints
+                control_actor['is_destination'] = False
+                self.control_actor_list.append(control_actor)
             except:
                 print('cannot start AI vehicle. world_id: ', world_id)
                 return
@@ -299,7 +333,7 @@ class ScenarioXML(object):
                     if type == 'ai_walker':
                         moveAiWalker(spawn_elem.find('ai_controller_id').text, float(move_elem.find('waypoint').attrib.get('speed')))
                     elif type == 'ai_vehicle':
-                        moveAiVehicle(spawn_elem.find('world_id').text)
+                        moveAiVehicle(move_elem.attrib.get('id'), spawn_elem.find('world_id').text, type, move_elem.findall('waypoint'))
                     elif type == 'walker' or type == 'vehicle':
                         moveInnocentActor(move_elem.attrib.get('id'), spawn_elem.find('world_id').text, type, move_elem.findall('waypoint')) # take over world info in spawn element and move info in move element
                     # elif type == 'static':
@@ -412,9 +446,32 @@ class ScenarioXML(object):
                 # text=str(omega),
                 # life_time=0.1
                 # )
-
-            # update distination if move has multiple targets
-
+            # for carla BasicAgent
+            elif control_actor['type'] == 'ai_vehicle' and control_actor.get('waypoints'):
+                actor = control_actor['actor']
+                agent = control_actor['agent']
+                # if control_actor.get('id') in ('705', '706', '708', '709', '712', '716'):
+                #     # carla/PythonAPI/carla/agents/navigation/global_route_planner.py", line 293, in _path_search
+                #     # self._graph, source=start[0], target=end[0]
+                #     # above error is happend in this id
+                #     continue
+                if not control_actor['is_destination']:
+                    destination_waypoint = control_actor.get('waypoints').pop(0)
+                    print('ai_vehicle {}, next destination :{}'.format(control_actor.get('id'),destination_waypoint.text))
+                    destination_loc = carla.Location(
+                        float(destination_waypoint.text[0]),
+                        float(destination_waypoint.text[1]),
+                        float(destination_waypoint.text[2])
+                    )
+                    speed = float(destination_waypoint.attrib.get('speed'))
+                    agent.set_target_speed(speed)
+                    agent.set_destination(destination_loc)
+                    control_actor['is_destination'] = True
+                if agent.done():
+                    control_actor['is_destination'] = False
+                else:
+                    control = agent.run_step()
+                    actor.apply_control(control)
             elif control_actor['type'] == 'static':
                 transform = control_actor.get('actor').get_transform()
                 dist = math.sqrt(
@@ -536,7 +593,7 @@ def game_loop(args):
 if __name__ == '__main__':
 
     argparser = argparse.ArgumentParser( description = __doc__)
-    argparser.add_argument
+    argparser.add_argument(
         '--host',
         metavar='H',
         default='127.0.0.1',
